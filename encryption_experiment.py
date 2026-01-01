@@ -276,9 +276,9 @@ def main():
         print("   > Running AES-Only...")
         w, r = run_aes(data)
         s = get_exact_storage_size('patient_aes', 'AES')
-        results['AES']['w'].append(w)
-        results['AES']['r'].append(r)
-        results['AES']['s'].append(s)
+        results['AES-Only']['w'].append(w)
+        results['AES-Only']['r'].append(r)
+        results['AES-Only']['s'].append(s)
 
         # 3. Run Hybrid Experiment
         print("   > Running Hybrid (AES-RSA)...")
@@ -318,7 +318,7 @@ def main():
             
     print("="*95)
     
-    # --- Create Graphs ---
+    # --- Create Graphs 1 (Bar Charts) ---
     x = np.arange(len(BATCH_SIZES))
     width = 0.25 
     
@@ -366,6 +366,30 @@ def main():
 
     fig.suptitle('Database Encryption Performance Comparison', fontsize=16)
     plt.tight_layout()
+    
+    # Show Bar Charts first
+    plt.show() 
+
+    # --- Create Graphs 2 (Pie Chart) ---
+    
+    # FIX: Explicitly convert Decimal/String to Float to avoid TypeError
+    sizes = [
+        float(results['Baseline']['s'][-1]),
+        float(results['AES']['s'][-1]),
+        float(results['Hybrid']['s'][-1])
+    ]
+    labels = ['Baseline', 'AES-Only', 'Hybrid']
+    colors = [c_base, c_aes, c_hyb]
+    explode = (0, 0, 0.1)  # slightly "explode" the Hybrid slice to highlight it
+
+    plt.figure(figsize=(8, 8))
+    plt.pie(sizes, explode=explode, labels=labels, colors=colors,
+            autopct=lambda p: f'{p:.1f}%\n({p*sum(sizes)/100:.0f} KB)',
+            shadow=True, startangle=140)
+    
+    plt.title(f'Storage Overhead Comparison\n(Batch Size: {BATCH_SIZES[-1]} Records)', fontsize=14)
+    plt.axis('equal')  # Equal aspect ratio ensures that pie is drawn as a circle.
+    
     plt.show()
 
 if __name__ == "__main__":
