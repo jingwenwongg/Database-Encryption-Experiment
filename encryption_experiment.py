@@ -347,7 +347,7 @@ def main():
     ax2.set_title('Read Performance (Select + Decryption)')
     ax2.set_xticks(x)
     ax2.set_xticklabels(BATCH_SIZES)
-    ax2.set_xlabel('Batch Size')
+    ax2.set_xlabel('Batch Size (Records)')
     ax2.legend()
     ax2.grid(axis='y', alpha=0.3)
 
