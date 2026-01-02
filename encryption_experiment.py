@@ -255,7 +255,7 @@ def main():
 
     results = {
         'Baseline': {'w': [], 'r': [], 's': []},
-        'AES':      {'w': [], 'r': [], 's': []},
+        'AES-Only':      {'w': [], 'r': [], 's': []},
         'Hybrid':   {'w': [], 'r': [], 's': []}
     }
 
@@ -304,7 +304,7 @@ def main():
     print("-" * 95)
 
     for i, count in enumerate(BATCH_SIZES):
-        for m in ['Baseline', 'AES', 'Hybrid']:
+        for m in ['Baseline', 'AES-Only', 'Hybrid']:
             w = results[m]['w'][i]
             r = results[m]['r'][i]
             s = results[m]['s'][i]
@@ -327,7 +327,7 @@ def main():
 
     # Plot 1: Write Speed
     rects1 = ax1.bar(x - width, results['Baseline']['w'], width, label='Baseline', color=c_base)
-    rects2 = ax1.bar(x, results['AES']['w'], width, label='AES-Only', color=c_aes)
+    rects2 = ax1.bar(x, results['AES-Only']['w'], width, label='AES-Only', color=c_aes)
     rects3 = ax1.bar(x + width, results['Hybrid']['w'], width, label='Hybrid', color=c_hyb)
 
     ax1.set_ylabel('Latency (ms)')
@@ -340,7 +340,7 @@ def main():
 
     # Plot 2: Read Speed
     rects4 = ax2.bar(x - width, results['Baseline']['r'], width, label='Baseline', color=c_base)
-    rects5 = ax2.bar(x, results['AES']['r'], width, label='AES-Only', color=c_aes)
+    rects5 = ax2.bar(x, results['AES-Only']['r'], width, label='AES-Only', color=c_aes)
     rects6 = ax2.bar(x + width, results['Hybrid']['r'], width, label='Hybrid', color=c_hyb)
 
     ax2.set_ylabel('Latency (ms)')
@@ -375,7 +375,7 @@ def main():
     # FIX: Explicitly convert Decimal/String to Float to avoid TypeError
     sizes = [
         float(results['Baseline']['s'][-1]),
-        float(results['AES']['s'][-1]),
+        float(results['AES-Only']['s'][-1]),
         float(results['Hybrid']['s'][-1])
     ]
     labels = ['Baseline', 'AES-Only', 'Hybrid']
