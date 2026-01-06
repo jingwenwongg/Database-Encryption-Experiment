@@ -1,5 +1,6 @@
 import mysql.connector
 from mysql.connector import Error
+import pymongo
 import time
 import matplotlib.pyplot as plt
 import numpy as np
@@ -8,388 +9,475 @@ from Crypto.PublicKey import RSA
 from Crypto.Random import get_random_bytes
 from faker import Faker
 
-# --- Configuration ---
-DB_CONFIG = {
+# --- Config ---
+SQL_CONFIG = {
     'host': 'localhost',
     'user': 'root',
     'password': '', 
     'database': 'encryption_experiment'
 }
 
-# Settings
+MONGO_CONFIG = {
+    'host': 'localhost',
+    'port': 27017,
+    'db_name': 'encryption_experiment_nosql'
+}
+
 CHUNK_SIZE = 500 
 BATCH_SIZES = [1000, 5000, 10000]
 
 fake = Faker()
 
-def setup_database():
-    """Resets the database and clears old tables to ensure a fresh start for every run."""
+# --- Database Management ---
+
+def setup_sql_database():
+    """Drops and recreates MySQL tables to ensure a clean state."""
     try:
-        # Connect to MySQL server to create the database if it doesn't exist
-        conn = mysql.connector.connect(host=DB_CONFIG['host'], user=DB_CONFIG['user'], password=DB_CONFIG['password'])
+        # Create DB if missing
+        conn = mysql.connector.connect(host=SQL_CONFIG['host'], user=SQL_CONFIG['user'], password=SQL_CONFIG['password'])
         cursor = conn.cursor()
-        cursor.execute(f"CREATE DATABASE IF NOT EXISTS {DB_CONFIG['database']}")
+        cursor.execute(f"CREATE DATABASE IF NOT EXISTS {SQL_CONFIG['database']}")
         conn.close()
 
-        # Connect to the specific experiment database
-        conn = mysql.connector.connect(**DB_CONFIG)
+        # Recreate tables
+        conn = mysql.connector.connect(**SQL_CONFIG)
         cursor = conn.cursor()
+        
+        tables = ['patient_baseline', 'patient_aes', 'patient_hybrid']
+        for t in tables:
+            cursor.execute(f"DROP TABLE IF EXISTS {t}")
 
-        # Remove old tables to avoid duplicate data
-        cursor.execute("DROP TABLE IF EXISTS patient_baseline")
-        cursor.execute("DROP TABLE IF EXISTS patient_aes")
-        cursor.execute("DROP TABLE IF EXISTS patient_hybrid")
-
-        # 1. Baseline Table (Normal text, no encryption)
+        # 1. Baseline (Plaintext)
         cursor.execute("""
             CREATE TABLE patient_baseline (
                 id INT AUTO_INCREMENT PRIMARY KEY,
-                name VARCHAR(255),
-                email VARCHAR(255),
-                notes TEXT
+                name VARCHAR(255), email VARCHAR(255), notes TEXT
             )
         """)
-
-        # 2. AES-Only Table (Data stored as binary ciphertext)
+        # 2. AES-Only (Binary Storage)
         cursor.execute("""
             CREATE TABLE patient_aes (
                 id INT AUTO_INCREMENT PRIMARY KEY,
-                name VARBINARY(512),
-                email VARBINARY(512),
-                notes BLOB
+                name VARBINARY(512), email VARBINARY(512), notes BLOB
             )
         """)
-
-        # 3. Hybrid Table (Stores encrypted data + the encrypted key for that row)
+        # 3. Hybrid (Binary + Encrypted Key Column)
         cursor.execute("""
             CREATE TABLE patient_hybrid (
                 id INT AUTO_INCREMENT PRIMARY KEY,
-                name VARBINARY(512),
-                email VARBINARY(512),
-                notes BLOB,
-                enc_key VARBINARY(512)
+                name VARBINARY(512), email VARBINARY(512), notes BLOB, enc_key VARBINARY(512)
             )
         """)
-        
         conn.close()
-        print(">> Database environment ready.")
-        
     except Error as e:
-        print(f"Error checking database: {e}")
+        print(f"[SQL Setup Error] {e}")
 
-def get_exact_storage_size(table_name, method):
-    """Calculates the total size (in KB) of the actual data stored in the table."""
+def setup_mongo_database():
+    """Drops MongoDB collections to prevent data duplication."""
     try:
-        conn = mysql.connector.connect(**DB_CONFIG)
+        client = pymongo.MongoClient(f"mongodb://{MONGO_CONFIG['host']}:{MONGO_CONFIG['port']}/")
+        db = client[MONGO_CONFIG['db_name']]
+        
+        for col in ['patient_baseline', 'patient_aes', 'patient_hybrid']:
+            db[col].drop()
+            
+        client.close()
+    except Exception as e:
+        print(f"[Mongo Setup Error] {e}")
+
+def get_sql_storage_size(method):
+    """Returns storage size in KB (converts Decimal to float)."""
+    try:
+        conn = mysql.connector.connect(**SQL_CONFIG)
         cursor = conn.cursor()
         
-        # specific queries to sum up the byte length of relevant columns
         if method == 'Baseline':
             query = "SELECT SUM(OCTET_LENGTH(name) + OCTET_LENGTH(email) + OCTET_LENGTH(notes)) FROM patient_baseline"
         elif method == 'AES':
             query = "SELECT SUM(OCTET_LENGTH(name) + OCTET_LENGTH(email) + OCTET_LENGTH(notes)) FROM patient_aes"
         elif method == 'Hybrid':
-            # Hybrid includes the extra 'enc_key' column size
             query = "SELECT SUM(OCTET_LENGTH(name) + OCTET_LENGTH(email) + OCTET_LENGTH(notes) + OCTET_LENGTH(enc_key)) FROM patient_hybrid"
-        
+            
         cursor.execute(query)
         result = cursor.fetchone()
         conn.close()
         
-        size_bytes = result[0] if result and result[0] else 0
-        return round(size_bytes / 1024, 2)
-        
-    except Error:
+        size = result[0] if result and result[0] else 0
+        return float(size) / 1024 
+    except:
+        return 0.0
+
+def get_mongo_storage_size(collection_name):
+    """Returns MongoDB collection size in KB."""
+    try:
+        client = pymongo.MongoClient(f"mongodb://{MONGO_CONFIG['host']}:{MONGO_CONFIG['port']}/")
+        db = client[MONGO_CONFIG['db_name']]
+        stats = db.command("collstats", collection_name)
+        return float(stats['size']) / 1024 
+    except:
         return 0.0
 
 def generate_dummy_data(n):
-    """Generates patient data to test with."""
     data = []
     for _ in range(n):
-        # Creates a tuple: (Name, Email, ~50 chars of notes)
+        # Name, Email, ~50 char Note
         data.append((fake.name(), fake.email(), fake.text(max_nb_chars=50)))
     return data
 
-# --- Scenario A: Baseline ---
-def run_baseline(data):
-    conn = mysql.connector.connect(**DB_CONFIG)
-    cursor = conn.cursor()
+# --- SQL EXPERIMENTS ---
 
-    # WRITE TEST
+def run_sql_baseline(data):
+    conn = mysql.connector.connect(**SQL_CONFIG)
+    cursor = conn.cursor()
+    
+    # Write
     start = time.time()
-    # Insert data in chunks to handle large datasets efficiently
     for i in range(0, len(data), CHUNK_SIZE):
         chunk = data[i:i + CHUNK_SIZE]
         cursor.executemany("INSERT INTO patient_baseline (name, email, notes) VALUES (%s, %s, %s)", chunk)
     conn.commit()
     write_ms = (time.time() - start) * 1000
-
-    # READ TEST
+    
+    # Read
     start = time.time()
     cursor.execute("SELECT * FROM patient_baseline")
-    _ = cursor.fetchall() 
+    _ = cursor.fetchall()
     read_ms = (time.time() - start) * 1000
-
+    
     conn.close()
     return write_ms, read_ms
 
-# --- Scenario B: AES-Only ---
-def run_aes(data):
-    conn = mysql.connector.connect(**DB_CONFIG)
+def run_sql_aes(data):
+    conn = mysql.connector.connect(**SQL_CONFIG)
     cursor = conn.cursor()
-
-    # Generate one single key used for ALL rows (Symmetric encryption)
-    static_key = get_random_bytes(32) 
-
-    # WRITE TEST
+    static_key = get_random_bytes(32) # Single key for all rows
+    
+    # Write
     start = time.time()
     encrypted_rows = []
-    
     for row in data:
         enc_fields = []
         for text in row:
-            # Encrypt each field (Name, Email, Notes)
             cipher = AES.new(static_key, AES.MODE_GCM)
             ciphertext, tag = cipher.encrypt_and_digest(text.encode('utf-8'))
-            # Store Nonce + Tag + Ciphertext together
             enc_fields.append(cipher.nonce + tag + ciphertext)
         encrypted_rows.append(tuple(enc_fields))
-
+        
     for i in range(0, len(encrypted_rows), CHUNK_SIZE):
         chunk = encrypted_rows[i:i + CHUNK_SIZE]
         cursor.executemany("INSERT INTO patient_aes (name, email, notes) VALUES (%s, %s, %s)", chunk)
     conn.commit()
     write_ms = (time.time() - start) * 1000
-
-    # READ TEST
+    
+    # Read
     start = time.time()
     cursor.execute("SELECT name, email, notes FROM patient_aes")
     fetched = cursor.fetchall()
-    
     for row in fetched:
         try:
             for cell in row:
-                # Extract the parts needed for decryption
-                nonce = cell[:16]
-                tag = cell[16:32]
-                ciphertext = cell[32:]
-                
-                # Decrypt using the static key
+                nonce, tag, ciphertext = cell[:16], cell[16:32], cell[32:]
                 cipher = AES.new(static_key, AES.MODE_GCM, nonce=nonce)
                 cipher.decrypt_and_verify(ciphertext, tag)
-        except:
-            continue
-            
+        except: continue
     read_ms = (time.time() - start) * 1000
-
+    
     conn.close()
     return write_ms, read_ms
 
-# --- Scenario C: Hybrid (AES + RSA) ---
-def run_hybrid(data):
-    conn = mysql.connector.connect(**DB_CONFIG)
+def run_sql_hybrid(data):
+    conn = mysql.connector.connect(**SQL_CONFIG)
     cursor = conn.cursor()
-
-    # Generate RSA Key Pair (Public & Private)
+    
+    # RSA Key Pair
     key_pair = RSA.generate(2048)
     rsa_enc = PKCS1_OAEP.new(key_pair.publickey())
     rsa_dec = PKCS1_OAEP.new(key_pair)
-
-    # WRITE TEST
+    
+    # Write
     start = time.time()
     encrypted_rows = []
-
     for row in data:
-        # Create a unique AES key for THIS specific row
-        row_key = get_random_bytes(32) 
-        
-        # Step 1: Encrypt the actual data using the unique AES key
+        row_key = get_random_bytes(32) # Unique key per row
         enc_fields = []
+        
+        # Encrypt data with AES
         for text in row:
             cipher = AES.new(row_key, AES.MODE_GCM)
             ciphertext, tag = cipher.encrypt_and_digest(text.encode('utf-8'))
             enc_fields.append(cipher.nonce + tag + ciphertext)
-        
-        # Step 2: Encrypt the AES key using the RSA Public Key
+            
+        # Encrypt the AES key with RSA
         enc_row_key = rsa_enc.encrypt(row_key)
-        
-        # Store encrypted data AND the encrypted key
         encrypted_rows.append(tuple(enc_fields + [enc_row_key]))
-
+        
     for i in range(0, len(encrypted_rows), CHUNK_SIZE):
         chunk = encrypted_rows[i:i + CHUNK_SIZE]
         cursor.executemany("INSERT INTO patient_hybrid (name, email, notes, enc_key) VALUES (%s, %s, %s, %s)", chunk)
     conn.commit()
     write_ms = (time.time() - start) * 1000
-
-    # READ TEST
+    
+    # Read
     start = time.time()
     cursor.execute("SELECT name, email, notes, enc_key FROM patient_hybrid")
     fetched = cursor.fetchall()
-
     for row in fetched:
-        enc_key_blob = row[3]
         try:
-            # Step 1: Decrypt the unique AES key using RSA Private Key
-            row_key = rsa_dec.decrypt(enc_key_blob)
+            # Decrypt AES key using RSA first
+            row_key = rsa_dec.decrypt(row[3])
             
-            # Step 2: Use that recovered key to decrypt the data
+            # Use recovered key to decrypt data
             for i in range(3):
                 cell = row[i]
-                nonce = cell[:16]
-                tag = cell[16:32]
-                ciphertext = cell[32:]
+                nonce, tag, ciphertext = cell[:16], cell[16:32], cell[32:]
                 cipher = AES.new(row_key, AES.MODE_GCM, nonce=nonce)
                 cipher.decrypt_and_verify(ciphertext, tag)
-        except:
-            continue
-
+        except: continue
     read_ms = (time.time() - start) * 1000
-
+    
     conn.close()
     return write_ms, read_ms
 
-def main():
-    print("--- Initiating Performance Benchmarks ---")
-    setup_database()
+# --- NOSQL (MONGODB) EXPERIMENTS ---
 
-    results = {
-        'Baseline': {'w': [], 'r': [], 's': []},
-        'AES-Only':      {'w': [], 'r': [], 's': []},
-        'Hybrid':   {'w': [], 'r': [], 's': []}
-    }
+def run_mongo_baseline(data):
+    client = pymongo.MongoClient(f"mongodb://{MONGO_CONFIG['host']}:{MONGO_CONFIG['port']}/")
+    db = client[MONGO_CONFIG['db_name']]
+    collection = db['patient_baseline']
+    
+    docs = [{'name': d[0], 'email': d[1], 'notes': d[2]} for d in data]
+    
+    # Write
+    start = time.time()
+    if docs:
+        collection.insert_many(docs)
+    write_ms = (time.time() - start) * 1000
+    
+    # Read
+    start = time.time()
+    _ = list(collection.find()) # Iterate cursor to measure fetching speed
+    read_ms = (time.time() - start) * 1000
+    
+    client.close()
+    return write_ms, read_ms
+
+def run_mongo_aes(data):
+    client = pymongo.MongoClient(f"mongodb://{MONGO_CONFIG['host']}:{MONGO_CONFIG['port']}/")
+    db = client[MONGO_CONFIG['db_name']]
+    collection = db['patient_aes']
+    static_key = get_random_bytes(32)
+    
+    # Write
+    start = time.time()
+    docs = []
+    for row in data:
+        enc_doc = {}
+        # Encrypt each field, store as binary
+        for idx, field in enumerate(['name', 'email', 'notes']):
+            cipher = AES.new(static_key, AES.MODE_GCM)
+            ct, tag = cipher.encrypt_and_digest(row[idx].encode('utf-8'))
+            enc_doc[field] = cipher.nonce + tag + ct 
+        docs.append(enc_doc)
+        
+    if docs:
+        collection.insert_many(docs)
+    write_ms = (time.time() - start) * 1000
+    
+    # Read
+    start = time.time()
+    cursor = collection.find()
+    for doc in cursor:
+        try:
+            for field in ['name', 'email', 'notes']:
+                raw = doc[field]
+                nonce, tag, ciphertext = raw[:16], raw[16:32], raw[32:]
+                cipher = AES.new(static_key, AES.MODE_GCM, nonce=nonce)
+                cipher.decrypt_and_verify(ciphertext, tag)
+        except: continue
+    read_ms = (time.time() - start) * 1000
+    
+    client.close()
+    return write_ms, read_ms
+
+def run_mongo_hybrid(data):
+    client = pymongo.MongoClient(f"mongodb://{MONGO_CONFIG['host']}:{MONGO_CONFIG['port']}/")
+    db = client[MONGO_CONFIG['db_name']]
+    collection = db['patient_hybrid']
+    
+    key_pair = RSA.generate(2048)
+    rsa_enc = PKCS1_OAEP.new(key_pair.publickey())
+    rsa_dec = PKCS1_OAEP.new(key_pair)
+    
+    # Write
+    start = time.time()
+    docs = []
+    for row in data:
+        row_key = get_random_bytes(32)
+        enc_doc = {}
+        
+        # Encrypt data with AES
+        for idx, field in enumerate(['name', 'email', 'notes']):
+            cipher = AES.new(row_key, AES.MODE_GCM)
+            ct, tag = cipher.encrypt_and_digest(row[idx].encode('utf-8'))
+            enc_doc[field] = cipher.nonce + tag + ct
+            
+        # Encrypt AES key with RSA
+        enc_doc['enc_key'] = rsa_enc.encrypt(row_key)
+        docs.append(enc_doc)
+        
+    if docs:
+        collection.insert_many(docs)
+    write_ms = (time.time() - start) * 1000
+    
+    # Read
+    start = time.time()
+    cursor = collection.find()
+    for doc in cursor:
+        try:
+            # RSA Decrypt key
+            row_key = rsa_dec.decrypt(doc['enc_key'])
+            
+            # AES Decrypt data
+            for field in ['name', 'email', 'notes']:
+                raw = doc[field]
+                nonce, tag, ciphertext = raw[:16], raw[16:32], raw[32:]
+                cipher = AES.new(row_key, AES.MODE_GCM, nonce=nonce)
+                cipher.decrypt_and_verify(ciphertext, tag)
+        except: continue
+    read_ms = (time.time() - start) * 1000
+    
+    client.close()
+    return write_ms, read_ms
+
+
+def main():
+    print("--- Initiating Benchmarks (SQL vs NoSQL) ---")
+    setup_sql_database()
+    setup_mongo_database()
+
+    # Data holders
+    res_sql = {'Baseline': {'w':[],'r':[],'s':[]}, 'AES-Only': {'w':[],'r':[],'s':[]}, 'Hybrid': {'w':[],'r':[],'s':[]}}
+    res_nosql = {'Baseline': {'w':[],'r':[],'s':[]}, 'AES-Only': {'w':[],'r':[],'s':[]}, 'Hybrid': {'w':[],'r':[],'s':[]}}
 
     for count in BATCH_SIZES:
         print(f"\n[ Processing Batch: {count} Records ]")
-        # Ensure consistency: Use the exact same random data for all 3 methods
         data = generate_dummy_data(count)
 
-        # 1. Run Baseline Experiment
-        print("   > Running Baseline...")
-        w, r = run_baseline(data)
-        s = get_exact_storage_size('patient_baseline', 'Baseline')
-        results['Baseline']['w'].append(w)
-        results['Baseline']['r'].append(r)
-        results['Baseline']['s'].append(s)
-
-        # 2. Run AES Experiment
-        print("   > Running AES-Only...")
-        w, r = run_aes(data)
-        s = get_exact_storage_size('patient_aes', 'AES')
-        results['AES-Only']['w'].append(w)
-        results['AES-Only']['r'].append(r)
-        results['AES-Only']['s'].append(s)
-
-        # 3. Run Hybrid Experiment
-        print("   > Running Hybrid (AES-RSA)...")
-        w, r = run_hybrid(data)
-        s = get_exact_storage_size('patient_hybrid', 'Hybrid')
-        results['Hybrid']['w'].append(w)
-        results['Hybrid']['r'].append(r)
-        results['Hybrid']['s'].append(s)
+        # 1. SQL Tests
+        print("   > Running SQL...", end="\r")
         
-        # Clean up tables so the next batch size starts empty
-        conn = mysql.connector.connect(**DB_CONFIG)
+        w, r = run_sql_baseline(data)
+        res_sql['Baseline']['w'].append(w); res_sql['Baseline']['r'].append(r); res_sql['Baseline']['s'].append(get_sql_storage_size('Baseline'))
+        
+        w, r = run_sql_aes(data)
+        res_sql['AES-Only']['w'].append(w); res_sql['AES-Only']['r'].append(r); res_sql['AES-Only']['s'].append(get_sql_storage_size('AES'))
+        
+        w, r = run_sql_hybrid(data)
+        res_sql['Hybrid']['w'].append(w); res_sql['Hybrid']['r'].append(r); res_sql['Hybrid']['s'].append(get_sql_storage_size('Hybrid'))
+        
+        # Reset SQL tables
+        conn = mysql.connector.connect(**SQL_CONFIG)
         c = conn.cursor()
-        c.execute("TRUNCATE TABLE patient_baseline")
-        c.execute("TRUNCATE TABLE patient_aes")
-        c.execute("TRUNCATE TABLE patient_hybrid")
+        c.execute("TRUNCATE TABLE patient_baseline"); c.execute("TRUNCATE TABLE patient_aes"); c.execute("TRUNCATE TABLE patient_hybrid")
         conn.close()
 
-    # --- Print Final Results Table ---
-    print("\n" + "="*95)
-    print(f"{'FINAL EXPERIMENTAL RESULTS':^95}")
-    print("="*95)
-    print(f"| {'BATCH':^10} | {'METHOD':<12} | {'WRITE (ms)':>12} | {'READ (ms)':>12} | {'TPS':>10} | {'SIZE (KB)':>10} |")
-    print("-" * 95)
-
-    for i, count in enumerate(BATCH_SIZES):
-        for m in ['Baseline', 'AES-Only', 'Hybrid']:
-            w = results[m]['w'][i]
-            r = results[m]['r'][i]
-            s = results[m]['s'][i]
-            # TPS = Transactions Per Second
-            tps = count / (w/1000) if w > 0 else 0
-            
-            print(f"| {count:^10} | {m:<12} | {w:>12.2f} | {r:>12.2f} | {tps:>10.2f} | {s:>10.2f} |")
+        # 2. NoSQL Tests
+        print("   > Running NoSQL...      ")
         
-        if i < len(BATCH_SIZES) - 1:
-            print("-" * 95)
-            
-    print("="*95)
+        w, r = run_mongo_baseline(data)
+        res_nosql['Baseline']['w'].append(w); res_nosql['Baseline']['r'].append(r); res_nosql['Baseline']['s'].append(get_mongo_storage_size('patient_baseline'))
+
+        w, r = run_mongo_aes(data)
+        res_nosql['AES-Only']['w'].append(w); res_nosql['AES-Only']['r'].append(r); res_nosql['AES-Only']['s'].append(get_mongo_storage_size('patient_aes'))
+
+        w, r = run_mongo_hybrid(data)
+        res_nosql['Hybrid']['w'].append(w); res_nosql['Hybrid']['r'].append(r); res_nosql['Hybrid']['s'].append(get_mongo_storage_size('patient_hybrid'))
+
+        # Reset Mongo collections
+        setup_mongo_database()
+
+    # --- Print Terminal Tables ---
+    def print_table(title, results):
+        print("\n" + "="*95)
+        print(f"{title:^95}")
+        print("="*95)
+        print(f"| {'BATCH':^10} | {'METHOD':<12} | {'WRITE (ms)':>12} | {'READ (ms)':>12} | {'TPS':>10} | {'SIZE (KB)':>10} |")
+        print("-" * 95)
+        for i, count in enumerate(BATCH_SIZES):
+            for m in ['Baseline', 'AES-Only', 'Hybrid']:
+                w = results[m]['w'][i]
+                r = results[m]['r'][i]
+                s = results[m]['s'][i]
+                tps = count / (w/1000) if w > 0 else 0
+                print(f"| {count:^10} | {m:<12} | {w:>12.2f} | {r:>12.2f} | {tps:>10.2f} | {s:>10.2f} |")
+            if i < len(BATCH_SIZES) - 1: print("-" * 95)
+        print("="*95)
+
+    print_table("RESULTS: Relational DBMS (MySQL)", res_sql)
+    print_table("RESULTS: NoSQL DBMS (MongoDB)", res_nosql)
+
+    # --- Plotting NoSQL Graphs Only ---
+    # Layout: Top row = 2 Bar Charts (Write, Read). Bottom row = 1 Pie Chart.
     
-    # --- Create Graphs 1 (Bar Charts) ---
+    fig = plt.figure(figsize=(14, 10))
+    grid = plt.GridSpec(2, 2, hspace=0.3, wspace=0.2)
+
+    ax1 = fig.add_subplot(grid[0, 0]) # Write Bar
+    ax2 = fig.add_subplot(grid[0, 1]) # Read Bar
+    ax3 = fig.add_subplot(grid[1, :]) # Storage Pie
+
     x = np.arange(len(BATCH_SIZES))
     width = 0.25 
-    
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
     c_base, c_aes, c_hyb = '#2E8B57', '#4682B4', '#CD5C5C'
 
-    # Plot 1: Write Speed
-    rects1 = ax1.bar(x - width, results['Baseline']['w'], width, label='Baseline', color=c_base)
-    rects2 = ax1.bar(x, results['AES-Only']['w'], width, label='AES-Only', color=c_aes)
-    rects3 = ax1.bar(x + width, results['Hybrid']['w'], width, label='Hybrid', color=c_hyb)
-
+    # 1. Write Chart
+    r1 = ax1.bar(x - width, res_nosql['Baseline']['w'], width, label='Baseline', color=c_base)
+    r2 = ax1.bar(x, res_nosql['AES-Only']['w'], width, label='AES-Only', color=c_aes)
+    r3 = ax1.bar(x + width, res_nosql['Hybrid']['w'], width, label='Hybrid', color=c_hyb)
     ax1.set_ylabel('Latency (ms)')
-    ax1.set_title('Write Performance (Encryption + Insert)')
+    ax1.set_title('NoSQL Write Performance (Encryption + Insert)')
     ax1.set_xticks(x)
     ax1.set_xticklabels(BATCH_SIZES)
-    ax1.set_xlabel('Batch Size (Records)')
     ax1.legend()
     ax1.grid(axis='y', alpha=0.3)
 
-    # Plot 2: Read Speed
-    rects4 = ax2.bar(x - width, results['Baseline']['r'], width, label='Baseline', color=c_base)
-    rects5 = ax2.bar(x, results['AES-Only']['r'], width, label='AES-Only', color=c_aes)
-    rects6 = ax2.bar(x + width, results['Hybrid']['r'], width, label='Hybrid', color=c_hyb)
-
+    # 2. Read Chart
+    r4 = ax2.bar(x - width, res_nosql['Baseline']['r'], width, label='Baseline', color=c_base)
+    r5 = ax2.bar(x, res_nosql['AES-Only']['r'], width, label='AES-Only', color=c_aes)
+    r6 = ax2.bar(x + width, res_nosql['Hybrid']['r'], width, label='Hybrid', color=c_hyb)
     ax2.set_ylabel('Latency (ms)')
-    ax2.set_title('Read Performance (Select + Decryption)')
+    ax2.set_title('NoSQL Read Performance (Select + Decryption)')
     ax2.set_xticks(x)
     ax2.set_xticklabels(BATCH_SIZES)
-    ax2.set_xlabel('Batch Size (Records)')
     ax2.legend()
     ax2.grid(axis='y', alpha=0.3)
 
+    # Helper to put numbers on bars
     def label_bars(ax, rects):
-        """Helper to add number labels on top of the bars."""
         for rect in rects:
             height = rect.get_height()
-            ax.annotate(f'{int(height)}',
-                        xy=(rect.get_x() + rect.get_width() / 2, height),
-                        xytext=(0, 3), 
-                        textcoords="offset points",
-                        ha='center', va='bottom', fontsize=8)
+            ax.annotate(f'{int(height)}', xy=(rect.get_x() + rect.get_width()/2, height),
+                        xytext=(0, 3), textcoords="offset points", ha='center', va='bottom', fontsize=8)
+    for r in [r1, r2, r3]: label_bars(ax1, r)
+    for r in [r4, r5, r6]: label_bars(ax2, r)
 
-    for r in [rects1, rects2, rects3]: label_bars(ax1, r)
-    for r in [rects4, rects5, rects6]: label_bars(ax2, r)
-
-    fig.suptitle('Database Encryption Performance Comparison', fontsize=16)
-    plt.tight_layout()
-    
-    # Show Bar Charts first
-    plt.show() 
-
-    # --- Create Graphs 2 (Pie Chart) ---
-    
-    # FIX: Explicitly convert Decimal/String to Float to avoid TypeError
+    # 3. Storage Pie Chart
+    # Explicit float conversion to prevent Decimal type errors
     sizes = [
-        float(results['Baseline']['s'][-1]),
-        float(results['AES-Only']['s'][-1]),
-        float(results['Hybrid']['s'][-1])
+        float(res_nosql['Baseline']['s'][-1]),
+        float(res_nosql['AES-Only']['s'][-1]),
+        float(res_nosql['Hybrid']['s'][-1])
     ]
     labels = ['Baseline', 'AES-Only', 'Hybrid']
     colors = [c_base, c_aes, c_hyb]
-    explode = (0, 0, 0.1)  # slightly "explode" the Hybrid slice to highlight it
+    explode = (0, 0, 0.1)
 
-    plt.figure(figsize=(8, 8))
-    plt.pie(sizes, explode=explode, labels=labels, colors=colors,
+    ax3.pie(sizes, explode=explode, labels=labels, colors=colors,
             autopct=lambda p: f'{p:.1f}%\n({p*sum(sizes)/100:.0f} KB)',
             shadow=True, startangle=140)
-    
-    plt.title(f'Storage Overhead Comparison\n(Batch Size: {BATCH_SIZES[-1]} Records)', fontsize=14)
-    plt.axis('equal')  # Equal aspect ratio ensures that pie is drawn as a circle.
-    
+    ax3.set_title(f'NoSQL Storage Overhead (Batch: {BATCH_SIZES[-1]} Records)')
+
+    fig.suptitle('NoSQL (MongoDB) Encryption Benchmarks', fontsize=16)
     plt.show()
 
 if __name__ == "__main__":
