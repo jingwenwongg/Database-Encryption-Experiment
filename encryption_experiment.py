@@ -416,68 +416,103 @@ def main():
     print_table("RESULTS: Relational DBMS (MySQL)", res_sql)
     print_table("RESULTS: NoSQL DBMS (MongoDB)", res_nosql)
 
-    # --- Plotting NoSQL Graphs Only ---
-    # Layout: Top row = 2 Bar Charts (Write, Read). Bottom row = 1 Pie Chart.
+    # --- FULL COMPARISON PLOTTING (SQL + NoSQL) ---
+    plt.rcParams.update({'font.size': 8})
     
-    fig = plt.figure(figsize=(14, 10))
-    grid = plt.GridSpec(2, 2, hspace=0.3, wspace=0.2)
-
-    ax1 = fig.add_subplot(grid[0, 0]) # Write Bar
-    ax2 = fig.add_subplot(grid[0, 1]) # Read Bar
-    ax3 = fig.add_subplot(grid[1, :]) # Storage Pie
-
+    # Increased figsize to ensure labels are not cut off
+    fig, axes = plt.subplots(2, 3, figsize=(15, 9))
+    fig.suptitle('Encryption Performance Analysis: SQL vs NoSQL', fontsize=16, fontweight='bold', y=0.98)
+    
     x = np.arange(len(BATCH_SIZES))
-    width = 0.25 
-    c_base, c_aes, c_hyb = '#2E8B57', '#4682B4', '#CD5C5C'
-
-    # 1. Write Chart
-    r1 = ax1.bar(x - width, res_nosql['Baseline']['w'], width, label='Baseline', color=c_base)
-    r2 = ax1.bar(x, res_nosql['AES-Only']['w'], width, label='AES-Only', color=c_aes)
-    r3 = ax1.bar(x + width, res_nosql['Hybrid']['w'], width, label='Hybrid', color=c_hyb)
-    ax1.set_ylabel('Latency (ms)')
-    ax1.set_title('NoSQL Write Performance (Encryption + Insert)')
-    ax1.set_xticks(x)
-    ax1.set_xticklabels(BATCH_SIZES)
-    ax1.legend()
-    ax1.grid(axis='y', alpha=0.3)
-
-    # 2. Read Chart
-    r4 = ax2.bar(x - width, res_nosql['Baseline']['r'], width, label='Baseline', color=c_base)
-    r5 = ax2.bar(x, res_nosql['AES-Only']['r'], width, label='AES-Only', color=c_aes)
-    r6 = ax2.bar(x + width, res_nosql['Hybrid']['r'], width, label='Hybrid', color=c_hyb)
-    ax2.set_ylabel('Latency (ms)')
-    ax2.set_title('NoSQL Read Performance (Select + Decryption)')
-    ax2.set_xticks(x)
-    ax2.set_xticklabels(BATCH_SIZES)
-    ax2.legend()
-    ax2.grid(axis='y', alpha=0.3)
-
-    # Helper to put numbers on bars
+    width = 0.25
+    c_base, c_aes, c_hyb = '#2E8B57', '#4682B4', '#CD5C5C' # Green, Blue, Red
+    
     def label_bars(ax, rects):
+        """Helper to add number labels."""
         for rect in rects:
             height = rect.get_height()
-            ax.annotate(f'{int(height)}', xy=(rect.get_x() + rect.get_width()/2, height),
-                        xytext=(0, 3), textcoords="offset points", ha='center', va='bottom', fontsize=8)
-    for r in [r1, r2, r3]: label_bars(ax1, r)
-    for r in [r4, r5, r6]: label_bars(ax2, r)
+            ax.annotate(f'{int(height)}', xy=(rect.get_x() + rect.get_width() / 2, height),
+                        xytext=(0, 3), textcoords="offset points", ha='center', va='bottom', fontsize=7)
 
-    # 3. Storage Pie Chart
-    # Explicit float conversion to prevent Decimal type errors
-    sizes = [
-        float(res_nosql['Baseline']['s'][-1]),
-        float(res_nosql['AES-Only']['s'][-1]),
+    def set_headroom(ax, val_lists):
+        """Dynamic Y-limit so numbers don't touch the top border."""
+        max_val = max([item for sublist in val_lists for item in sublist])
+        ax.set_ylim(0, max_val * 1.25) 
+
+    # --- Row 1: SQL Graphs ---
+    
+    # 1. SQL Write
+    rects1 = axes[0, 0].bar(x - width, res_sql['Baseline']['w'], width, label='Baseline', color=c_base)
+    rects2 = axes[0, 0].bar(x, res_sql['AES-Only']['w'], width, label='AES-Only', color=c_aes)
+    rects3 = axes[0, 0].bar(x + width, res_sql['Hybrid']['w'], width, label='Hybrid', color=c_hyb)
+    axes[0, 0].set_ylabel('Latency (ms)', fontsize=10, fontweight='bold')
+    axes[0, 0].set_title('SQL: Write Latency', fontsize=11, fontweight='bold')
+    axes[0, 0].set_xticks(x); axes[0, 0].set_xticklabels(BATCH_SIZES)
+    axes[0, 0].legend()
+    label_bars(axes[0, 0], rects1); label_bars(axes[0, 0], rects2); label_bars(axes[0, 0], rects3)
+    set_headroom(axes[0, 0], [res_sql['Baseline']['w'], res_sql['AES-Only']['w'], res_sql['Hybrid']['w']])
+
+    # 2. SQL Read
+    rects4 = axes[0, 1].bar(x - width, res_sql['Baseline']['r'], width, label='Baseline', color=c_base)
+    rects5 = axes[0, 1].bar(x, res_sql['AES-Only']['r'], width, label='AES-Only', color=c_aes)
+    rects6 = axes[0, 1].bar(x + width, res_sql['Hybrid']['r'], width, label='Hybrid', color=c_hyb)
+    axes[0, 1].set_ylabel('Latency (ms)', fontsize=10, fontweight='bold')
+    axes[0, 1].set_title('SQL: Read Latency', fontsize=11, fontweight='bold')
+    axes[0, 1].set_xticks(x); axes[0, 1].set_xticklabels(BATCH_SIZES)
+    axes[0, 1].legend()
+    label_bars(axes[0, 1], rects4); label_bars(axes[0, 1], rects5); label_bars(axes[0, 1], rects6)
+    set_headroom(axes[0, 1], [res_sql['Baseline']['r'], res_sql['AES-Only']['r'], res_sql['Hybrid']['r']])
+
+    # 3. SQL Storage Pie
+    sizes_sql = [
+        float(res_sql['Baseline']['s'][-1]), 
+        float(res_sql['AES-Only']['s'][-1]), 
+        float(res_sql['Hybrid']['s'][-1])
+    ]
+    axes[0, 2].pie(sizes_sql, labels=['Baseline', 'AES', 'Hybrid'], 
+                   autopct=lambda p: f'{p:.1f}%\n({p*sum(sizes_sql)/100:.0f} KB)', 
+                   colors=[c_base, c_aes, c_hyb], explode=(0,0,0.1), 
+                   textprops={'fontsize': 9}, shadow=True)
+    axes[0, 2].set_title(f'SQL Storage Overhead\n(Batch: {BATCH_SIZES[-1]})', fontsize=11, fontweight='bold')
+
+    # --- Row 2: NoSQL Graphs ---
+    
+    # 4. NoSQL Write
+    rects7 = axes[1, 0].bar(x - width, res_nosql['Baseline']['w'], width, label='Baseline', color=c_base)
+    rects8 = axes[1, 0].bar(x, res_nosql['AES-Only']['w'], width, label='AES-Only', color=c_aes)
+    rects9 = axes[1, 0].bar(x + width, res_nosql['Hybrid']['w'], width, label='Hybrid', color=c_hyb)
+    axes[1, 0].set_ylabel('Latency (ms)', fontsize=10, fontweight='bold')
+    axes[1, 0].set_title('NoSQL: Write Latency', fontsize=11, fontweight='bold')
+    axes[1, 0].set_xticks(x); axes[1, 0].set_xticklabels(BATCH_SIZES)
+    axes[1, 0].legend()
+    label_bars(axes[1, 0], rects7); label_bars(axes[1, 0], rects8); label_bars(axes[1, 0], rects9)
+    set_headroom(axes[1, 0], [res_nosql['Baseline']['w'], res_nosql['AES-Only']['w'], res_nosql['Hybrid']['w']])
+
+    # 5. NoSQL Read
+    rects10 = axes[1, 1].bar(x - width, res_nosql['Baseline']['r'], width, label='Baseline', color=c_base)
+    rects11 = axes[1, 1].bar(x, res_nosql['AES-Only']['r'], width, label='AES-Only', color=c_aes)
+    rects12 = axes[1, 1].bar(x + width, res_nosql['Hybrid']['r'], width, label='Hybrid', color=c_hyb)
+    axes[1, 1].set_ylabel('Latency (ms)', fontsize=10, fontweight='bold')
+    axes[1, 1].set_title('NoSQL: Read Latency', fontsize=11, fontweight='bold')
+    axes[1, 1].set_xticks(x); axes[1, 1].set_xticklabels(BATCH_SIZES)
+    axes[1, 1].legend()
+    label_bars(axes[1, 1], rects10); label_bars(axes[1, 1], rects11); label_bars(axes[1, 1], rects12)
+    set_headroom(axes[1, 1], [res_nosql['Baseline']['r'], res_nosql['AES-Only']['r'], res_nosql['Hybrid']['r']])
+
+    # 6. NoSQL Storage Pie
+    sizes_mongo = [
+        float(res_nosql['Baseline']['s'][-1]), 
+        float(res_nosql['AES-Only']['s'][-1]), 
         float(res_nosql['Hybrid']['s'][-1])
     ]
-    labels = ['Baseline', 'AES-Only', 'Hybrid']
-    colors = [c_base, c_aes, c_hyb]
-    explode = (0, 0, 0.1)
+    axes[1, 2].pie(sizes_mongo, labels=['Baseline', 'AES', 'Hybrid'], 
+                   autopct=lambda p: f'{p:.1f}%\n({p*sum(sizes_mongo)/100:.0f} KB)', 
+                   colors=[c_base, c_aes, c_hyb], explode=(0,0,0.1), 
+                   textprops={'fontsize': 9}, shadow=True)
+    axes[1, 2].set_title(f'NoSQL Storage Overhead\n(Batch: {BATCH_SIZES[-1]})', fontsize=11, fontweight='bold')
 
-    ax3.pie(sizes, explode=explode, labels=labels, colors=colors,
-            autopct=lambda p: f'{p:.1f}%\n({p*sum(sizes)/100:.0f} KB)',
-            shadow=True, startangle=140)
-    ax3.set_title(f'NoSQL Storage Overhead (Batch: {BATCH_SIZES[-1]} Records)')
-
-    fig.suptitle('NoSQL (MongoDB) Encryption Benchmarks', fontsize=16)
+    # Apply tight layout with padding to ensure Y-axis labels are visible
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     plt.show()
 
 if __name__ == "__main__":
